@@ -27,6 +27,9 @@ app.use(allowCrossDomain);
 // Parse URL-encoded and JSON request bodies
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.get('/', function (req, res) {
+    res.json({ message: 'API is running', data: null });
+});
 
 // Use routes as a module (see index.js)
 require('./routes')(app, router);
