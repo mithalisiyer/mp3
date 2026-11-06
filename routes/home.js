@@ -162,38 +162,77 @@ module.exports = function (router) {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(404).json({ message: 'Not Found', data: null });
         }
-        if (!req.body.name || !req.body.email) {
-            return res.status(400).json({
-                message: 'Bad Request',
-                data: null
-            });
-        }
-        User.findById(req.params.id).then(function (existingUser) {
-            if (!existingUser) {
-                res.status(404).json({ message: 'Not Found', data: null });
-                return null;
-            }
-            var suppliedUser = {
-                name: req.body.name,
-                email: req.body.email,
-                pendingTasks: req.body.pendingTasks || [],
-                dateCreated: existingUser.dateCreated
-            };
 
-            return User.findOneAndReplace(
-                { _id: req.params.id },
-                suppliedUser,
-                { new: true, runValidators: true }
-            );
-        }).then(function (user) {
-            if (!user) {
-                return;
+        if (typeof req.body.name !== 'string' || !req.body.name.trim() || typeof req.body.email !== 'string' || !req.body.email.trim()) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+
+        var newTaskIds = req.body.pendingTasks !== undefined ? req.body.pendingTasks : [];
+        if (!Array.isArray(newTaskIds)) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        for (var i = 0; i < newTaskIds.length; i++) {
+            if (typeof newTaskIds[i] !== 'string' || !mongoose.Types.ObjectId.isValid(newTaskIds[i])) {
+                return res.status(400).json({ message: 'Bad Request', data: null });
             }
-            res.status(200).json({
-                message: 'Success',
-                data: user
-            });
+        }
+
+        if (new Set(newTaskIds).size !== newTaskIds.length) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+
+        User.db.transaction(function (session) {
+            return User.findById(req.params.id).session(session)
+                .then(function (existingUser) {
+                    if (!existingUser) {
+                        var error = new Error('User not found');
+                        error.statusCode = 404;
+                        throw error;
+                    }
+                    return Task.find({ _id: { $in: newTaskIds } }).session(session)
+                        .then(function (newTasks) {
+                            if (newTasks.length !== newTaskIds.length) {
+                                var error = new Error('Not Found');
+                                error.statusCode = 404;
+                                throw error;
+                            }
+
+                            for (var i = 0; i < newTasks.length; i++) {
+                                if (newTasks[i].completed) {
+                                    var error = new Error('Bad Request');
+                                    error.statusCode = 400;
+                                    throw error;
+                                }
+                            }
+
+                            var userid = existingUser._id.toString();
+                            return Task.updateMany({ assignedUser: userid, completed: false, _id: { $nin: newTaskIds } }, { $set: { assignedUser: '', assignedUserName: 'unassigned' } }, { session: session })
+                                .then(function () {
+                                    return User.updateMany({ _id: { $ne: existingUser._id }, pendingTasks: { $in: newTaskIds } }, { $pull: { pendingTasks: { $in: newTaskIds } } }, { session: session });
+                                })
+                                .then(function () {
+                                    return Task.updateMany({ _id: { $in: newTaskIds } }, { $set: { assignedUser: userid, assignedUserName: req.body.name } }, { session: session });
+                                })
+                                .then(function () {
+                                    return Task.updateMany({ assignedUser: userid }, { $set: { assignedUserName: req.body.name } }, { session: session });
+                                })
+                                .then(function () {
+                                    var suppliedUser = {
+                                        name: req.body.name,
+                                        email: req.body.email,
+                                        pendingTasks: newTaskIds,
+                                        dateCreated: existingUser.dateCreated
+                                    };
+                                    return User.findOneAndReplace({ _id: req.params.id }, suppliedUser, { new: true, runValidators: true, session: session });
+                                });
+                        });
+                });
+        }).then(function (updatedUser) {
+            res.status(200).json({ message: 'Success', data: updatedUser });
         }).catch(function (err) {
+            if (err.statusCode) {
+                return res.status(err.statusCode).json({ message: err.statusCode === 404 ? 'Not Found' : 'Bad Request', data: null });
+            }
             if (err.code === 11000 || err.name === 'ValidationError') {
                 return res.status(400).json({ message: 'Bad Request', data: null });
             }
