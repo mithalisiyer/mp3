@@ -170,7 +170,8 @@ module.exports = function (router) {
         }
         User.findById(req.params.id).then(function (existingUser) {
             if (!existingUser) {
-                return res.status(404).json({ message: 'Not Found', data: null });
+                res.status(404).json({ message: 'Not Found', data: null });
+                return null;
             }
             var suppliedUser = {
                 name: req.body.name,
@@ -186,10 +187,7 @@ module.exports = function (router) {
             );
         }).then(function (user) {
             if (!user) {
-                return res.status(404).json({
-                    message: 'Not Found',
-                    data: null
-                });
+                return;
             }
             res.status(200).json({
                 message: 'Success',
@@ -358,14 +356,13 @@ module.exports = function (router) {
                 data: null
             });
         }
-        var newTask = new Task();
+        var newTask = new Task({
+            name: req.body.name,
+            description: req.body.description,
+            deadline: req.body.deadline,
+            completed: req.body.completed
+        });
 
-        newTask.name = req.body.name;
-        newTask.description = req.body.description;
-        newTask.deadline = req.body.deadline;
-        newTask.completed = req.body.completed;
-        newTask.assignedUser = req.body.assignedUser;
-        newTask.assignedUserName = req.body.assignedUserName;
         newTask.save().then(function (savedTask) {
             res.status(201).json({
                 message: 'Created',
@@ -514,7 +511,8 @@ module.exports = function (router) {
 
         Task.findById(req.params.id).then(function (task) {
             if (!task) {
-                return res.status(404).json({ message: 'Not Found', data: null });
+                res.status(404).json({ message: 'Not Found', data: null });
+                return null;
             }
             if (task.assignedUser) {
                 return User.updateOne(
