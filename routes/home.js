@@ -168,8 +168,8 @@ module.exports = function (router) {
                     });
                     return newUser.save({ session: session })
                         .then(function (savedUser) {
-                            return Task.updateMany(
-                                { _id: { $in: newTaskIds } }, { $set: { assignedUser: savedUser._id.toString(), assignedUserName: savedUser.name } }, { session: session })
+                            return User.updateMany(
+                                { _id: { $ne: savedUser._id }, pendingTasks: { $in: newTaskIds } }, { $pull: { pendingTasks: { $in: newTaskIds } } }, { session: session })
                                 .then(function () {
                                     return savedUser;
                                 });
