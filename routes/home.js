@@ -127,36 +127,98 @@ module.exports = function (router) {
     });
 
     router.route('/users').post(function (req, res) {
-        if (!req.body.name || !req.body.email) {
-            return res.status(400).json({
-                message: 'Bad Request',
-                data: null
-            });
+        if (typeof req.body.name !== 'string' || !req.body.name.trim() || typeof req.body.email !== 'string' || !req.body.email.trim()) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
         }
+        var newTaskIds = req.body.pendingTasks !== undefined ? req.body.pendingTasks : [];
 
-        var newUser = new User();
-        newUser.name = req.body.name;
-        newUser.email = req.body.email;
-
-        newUser.save().then(function (savedUser) {
-            res.status(201).json({
-                message: 'Created',
-                data: savedUser
-            });
-        }).catch(function (err) {
-            if (err.code === 11000) {
-                return res.status(400).json({
-                    message: 'Bad Request',
-                    data: null
+        if (!Array.isArray(newTaskIds)) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        for (var i = 0; i < newTaskIds.length; i++) {
+            if (typeof newTaskIds[i] !== 'string' ||
+                !mongoose.Types.ObjectId.isValid(newTaskIds[i])) {
+                return res.status(400).json({ message: 'Bad Request', data: null });
+            }
+        }
+        if (new Set(newTaskIds).size !== newTaskIds.length) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        User.db.transaction(function (session) {
+            return Task.find({
+                _id: { $in: newTaskIds }
+            }).session(session)
+                .then(function (newTasks) {
+                    if (newTasks.length !== newTaskIds.length) {
+                        var error = new Error('Task not found');
+                        error.statusCode = 404;
+                        throw error;
+                    }
+                    for (var i = 0; i < newTasks.length; i++) {
+                        if (newTasks[i].completed) {
+                            var error = new Error('Completed task');
+                            error.statusCode = 400;
+                            throw error;
+                        }
+                    }
+                    var newUser = new User({
+                        name: req.body.name,
+                        email: req.body.email,
+                        pendingTasks: newTaskIds
+                    });
+                    return newUser.save({ session: session })
+                        .then(function (savedUser) {
+                            return Task.updateMany(
+                                { _id: { $in: newTaskIds } }, { $set: { assignedUser: savedUser._id.toString(), assignedUserName: savedUser.name } }, { session: session })
+                                .then(function () {
+                                    return savedUser;
+                                });
+                        });
                 });
+
+        }).then(function (savedUser) {
+            res.status(201).json({ message: 'Created', data: savedUser });
+        }).catch(function (err) {
+            if (err.statusCode) {
+                return res.status(err.statusCode).json({ message: err.statusCode === 404 ? 'Not Found' : 'Bad Request', data: null });
+            }
+            if (err.code === 11000 || err.name === 'ValidationError') {
+                return res.status(400).json({ message: 'Bad Request', data: null });
             }
 
-            res.status(400).json({
-                message: 'Bad Request',
-                data: null
-            });
+            return res.status(500).json({ message: 'Server Error', data: null });
         });
     });
+    // if (!req.body.name || !req.body.email) {
+    //     return res.status(400).json({
+    //         message: 'Bad Request',
+    //         data: null
+    //     });
+    // }
+
+    // var newUser = new User();
+    // newUser.name = req.body.name;
+    // newUser.email = req.body.email;
+
+    // newUser.save().then(function (savedUser) {
+    //     res.status(201).json({
+    //         message: 'Created',
+    //         data: savedUser
+    //     });
+    // }).catch(function (err) {
+    //     if (err.code === 11000) {
+    //         return res.status(400).json({
+    //             message: 'Bad Request',
+    //             data: null
+    //         });
+    //     }
+
+    //     res.status(400).json({
+    //         message: 'Bad Request',
+    //         data: null
+    //     });
+    // });
+    // });
 
     router.route('/users/:id').put(function (req, res) {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -373,10 +435,7 @@ module.exports = function (router) {
 
         Task.findById(req.params.id).select(select).then(function (task) {
             if (!task) {
-                return res.status(404).json({
-                    message: 'Not Found',
-                    data: null
-                });
+                return res.status(404).json({ message: 'Not Found', data: null });
             }
 
             res.status(200).json({
@@ -389,29 +448,102 @@ module.exports = function (router) {
     });
 
     router.route('/tasks').post(function (req, res) {
-        if (!req.body.name || !req.body.deadline) {
-            return res.status(400).json({
-                message: 'Bad Request',
-                data: null
-            });
+        if (typeof req.body.name !== 'string' || !req.body.name.trim() || !req.body.deadline || isNaN(Date.parse(req.body.deadline))) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
         }
-        var newTask = new Task({
-            name: req.body.name,
-            description: req.body.description,
-            deadline: req.body.deadline,
-            completed: req.body.completed
-        });
+        if (req.body.description !== undefined &&
+            typeof req.body.description !== 'string') {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        if (req.body.completed !== undefined &&
+            typeof req.body.completed !== 'boolean') {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        var assignedUserId = req.body.assignedUser;
+        if (assignedUserId === undefined) {
+            assignedUserId = '';
+        }
+        if (typeof assignedUserId !== 'string') {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        if (assignedUserId !== '' &&
+            !mongoose.Types.ObjectId.isValid(assignedUserId)) {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
 
-        newTask.save().then(function (savedTask) {
-            res.status(201).json({
-                message: 'Created',
-                data: savedTask
-            });
+        if (req.body.assignedUserName !== undefined &&
+            typeof req.body.assignedUserName !== 'string') {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        if (assignedUserId === '' &&
+            req.body.assignedUserName !== undefined &&
+            req.body.assignedUserName !== 'unassigned') {
+            return res.status(400).json({ message: 'Bad Request', data: null });
+        }
+        User.db.transaction(function (session) {
+            if (assignedUserId === '') {
+                var unassignedTask = new Task({
+                    name: req.body.name,
+                    description: req.body.description,
+                    deadline: req.body.deadline,
+                    completed: req.body.completed,
+                    assignedUser: '',
+                    assignedUserName: 'unassigned'
+                });
+
+                return unassignedTask.save({ session: session });
+            }
+            return User.findById(assignedUserId).session(session)
+                .then(function (assignedUser) {
+                    if (!assignedUser) {
+                        var error = new Error('User not found');
+                        error.statusCode = 404;
+                        throw error;
+                    }
+                    if (req.body.assignedUserName !== undefined &&
+                        req.body.assignedUserName !== assignedUser.name) {
+                        var error = new Error('Assigned user name mismatch');
+                        error.statusCode = 400;
+                        throw error;
+                    }
+                    var newTask = new Task({
+                        name: req.body.name,
+                        description: req.body.description,
+                        deadline: req.body.deadline,
+                        completed: req.body.completed,
+                        assignedUser: assignedUser._id.toString(),
+                        assignedUserName: assignedUser.name
+                    });
+
+                    return newTask.save({ session: session })
+
+                        .then(function (savedTask) {
+                            if (savedTask.completed === false) {
+                                return User.updateOne(
+                                    { _id: assignedUser._id },
+                                    { $addToSet: { pendingTasks: savedTask._id.toString() } },
+                                    { session: session }
+                                ).then(function () {
+                                    return savedTask;
+                                });
+                            }
+                            return savedTask;
+                        });
+                });
+
+        }).then(function (savedTask) {
+            res.status(201).json({ message: 'Created', data: savedTask });
         }).catch(function (err) {
-            res.status(400).json({
-                message: 'Bad Request',
-                data: null
-            });
+            if (err.statusCode) {
+                return res.status(err.statusCode).json({
+                    message: err.statusCode === 404 ? 'Not Found' : 'Bad Request', data: null
+                });
+            }
+            if (err.code === 11000 || err.name === 'ValidationError' ||
+                err.name === 'CastError') {
+                return res.status(400).json({ message: 'Bad Request', data: null });
+            }
+            return res.status(500).json({ message: 'Server Error', data: null });
         });
     });
 
@@ -442,7 +574,10 @@ module.exports = function (router) {
                 });
             }
 
-            var assignedUserId = req.body.assignedUser || '';
+            var assignedUserId = req.body.assignedUser;
+            if (assignedUserId === undefined) {
+                assignedUserId = '';
+            }
             if (typeof assignedUserId !== 'string') {
                 return res.status(400).json({
                     message: 'Bad Request',
